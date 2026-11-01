@@ -26,11 +26,15 @@ Usage from the repository root::
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import hashlib
+import os
 import pathlib
 import subprocess
 import sys
 import tempfile
+import time
 import typing as typ
 
 from cyclopts import App, Parameter
@@ -482,6 +486,44 @@ class _SweepSession:
         return True
 
 
+@contextlib.contextmanager
+def _ledger_lock(ledger_path: pathlib.Path) -> typ.Iterator[None]:
+    """Serialize sweep sessions that share the same canonical ledger path."""
+    lock_key = hashlib.sha256(str(ledger_path.resolve()).encode("utf-8")).hexdigest()
+    lock_dir = pathlib.Path(tempfile.gettempdir()) / "concordat-ledger-locks"
+    lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock_path = lock_dir / f"{lock_key}.lock"
+
+    with lock_path.open("a+b") as lock_file:
+        if os.name == "nt":
+            import msvcrt
+
+            lock_file.seek(0, os.SEEK_END)
+            if lock_file.tell() == 0:
+                lock_file.write(b"\0")
+                lock_file.flush()
+            while True:
+                try:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def run_sweep(
     *,
     estate_path: pathlib.Path = DEFAULT_ESTATE_PATH,
@@ -514,26 +556,27 @@ def run_sweep(
     :class:`~concordat.errors.OperationalRuleError` from the resolution call
     rather than from this function's own body.
     """
-    # Resolving the version first validates the package too: an unknown
-    # identifier raises here, before any repository is touched.
-    package_version = rule_version(options.package)
-    estate = load_estate(estate_path)
-    session = _SweepSession(
-        owner=estate.owner,
-        ledger=_load_ledger(ledger_path, package=options.package),
-        ledger_path=ledger_path,
-        only=options.only,
-        limit=options.limit,
-        force=options.force,
-        package=options.package,
-        package_version=package_version,
-    )
+    with _ledger_lock(ledger_path):
+        # Resolving the version first validates the package too: an unknown
+        # identifier raises here, before any repository is touched.
+        package_version = rule_version(options.package)
+        estate = load_estate(estate_path)
+        session = _SweepSession(
+            owner=estate.owner,
+            ledger=_load_ledger(ledger_path, package=options.package),
+            ledger_path=ledger_path,
+            only=options.only,
+            limit=options.limit,
+            force=options.force,
+            package=options.package,
+            package_version=package_version,
+        )
 
-    for entry in estate.repositories:
-        if session.process(entry):
-            break
+        for entry in estate.repositories:
+            if session.process(entry):
+                break
 
-    return session.appended
+        return session.appended
 
 
 @app.command(name="report")

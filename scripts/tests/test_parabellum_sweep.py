@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
+import threading
+import time
 import typing as typ
 
 import pytest
@@ -138,6 +141,46 @@ class TestSweep:
         assert record["repository"] == "leynos/wireframe", record
         assert record["commit_sha"] == head, record
         assert record["verdict"] == "compliant", record
+
+    def test_concurrent_sweeps_share_ledger_without_duplicate_audits(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: pathlib.Path,
+    ) -> None:
+        """Concurrent invocations recheck the ledger after the first completes."""
+        estate_path = tmp_path / "estate.yaml"
+        ledger_path = tmp_path / "ledger.jsonl"
+        estate_path.write_text(
+            "schema_version: 1\nowner: leynos\nrepositories:\n  - name: wireframe\n",
+            encoding="utf-8",
+        )
+        barrier = threading.Barrier(2)
+        calls: list[str] = []
+
+        def fake_clone_and_audit(
+            owner: str, name: str, **_kwargs: object
+        ) -> tuple[str, sweep.RuleRunResult]:
+            calls.append(f"{owner}/{name}")
+            time.sleep(0.15)
+            return "a" * 40, _fake_result("compliant")
+
+        def run_sweep() -> sweep.Ledger:
+            barrier.wait(timeout=1)
+            return sweep.run_sweep(
+                estate_path=estate_path,
+                ledger_path=ledger_path,
+            )
+
+        monkeypatch.setattr(sweep, "resolve_head", lambda _owner, _name: "a" * 40)
+        monkeypatch.setattr(sweep, "clone_and_audit", fake_clone_and_audit)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(run_sweep) for _ in range(2)]
+            appended = [future.result() for future in futures]
+
+        assert calls == ["leynos/wireframe"]
+        assert sum(map(len, appended)) == 1
+        assert len(_ledger_lines(ledger_path)) == 1
 
     def test_a_repository_named_twice_is_processed_once(
         self,

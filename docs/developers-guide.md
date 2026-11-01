@@ -1683,6 +1683,12 @@ compare against. `--force` bypasses the commit-based skip (but not the
 exclusion skip, which unconditionally prevents duplicate exclusion records for
 the same repository and package).
 
+The sweep holds an operating-system file lock keyed by the resolved ledger path
+from before loading the index until the invocation finishes. A second process
+using the same ledger waits, then reads the first process's appended records
+before deciding which repositories to audit. Sweeps with different ledger paths
+remain independent.
+
 ### Report rendering and package filtering
 
 `scripts/parabellum_report.py` renders the Markdown report. `render_report`
