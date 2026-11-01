@@ -376,6 +376,8 @@ def run_bounded(
 
     Raises
     ------
+    KeyboardInterrupt
+        After stopping the child process tree and bounding pipe-reader cleanup.
     ValueError
         If the per-stream byte limit is not positive. The adapter also raises
         ``RuntimeError`` when the pipes cannot be created,
@@ -400,4 +402,8 @@ def run_bounded(
             readers,
             deadline,
         )
-        return _finish_process(state)
+        try:
+            return _finish_process(state)
+        except KeyboardInterrupt:
+            _stop_readers_after_timeout(process, readers)
+            raise
