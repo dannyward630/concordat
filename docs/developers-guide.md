@@ -719,6 +719,33 @@ listed here; the CodeScene coverage and Dependabot kinds are described after
   question and `runs_only_after_success` the test step's. The builder ignores
   its parameters: exemptions and severity are the policy's to apply. It runs no
   Cargo and reads no network.
+- `policy-input/nested-cargo-fixture-manifests` —
+  `nested_cargo_manifest_envelope.build_nested_cargo_manifest_envelope`. It
+  reuses `nested_cargo` for workspace-member resolution (the members of the one
+  workspace a candidate roots, not the estate-wide set) and the registry-
+  dependency test, `dependabot_envelope.read_dependabot_config` for the decoded
+  configuration (it never scans local actions, which this rule does not use),
+  and `dependency_family_coverage.coverage` for the directory-glob semantics,
+  so coverage here means the same thing as in the dependency-family package.
+  The coverage fact is `False` with no configuration and `None` (indeterminate)
+  with an undecodable one.
+- `policy-input/nested-cargo-nextest` —
+  `nested_cargo_nextest_envelope.build_nested_cargo_nextest_envelope`. The scan
+  for compiler-spawning tests lives in `nested_cargo_spawn` (test code only,
+  compiling subcommands only, files that name `Command`, 1 MiB cap); the
+  envelope reads `.config/nextest.toml` for serial groups, whether an override
+  uses one, `slow-timeout` in any profile or override and `global-timeout` in
+  any profile, and marks each top-level test binary as named or not by the
+  grouped filters. It runs neither Cargo nor nextest and does not evaluate
+  filtersets.
+- `policy-input/nested-cargo-ci-wiring` —
+  `nested_cargo_wiring_envelope.build_nested_cargo_wiring_envelope`. It reuses
+  the shared workflow reader of the CodeScene coverage envelope, then records
+  every place `CARGO_TARGET_DIR` is set (workflow, job and step `env`, and
+  `CARGO_TARGET_DIR=` assignments in `run` scripts) with its unevaluated value,
+  and per job whether a `setup-rust` step opts out of the wrapper export and
+  whether `RUSTC_WRAPPER` is named anywhere in the workflow or job. The Rego
+  policy classifies the values against the `temporary_patterns` parameter.
 - `policy-input/whitaker-provisioning` —
   `whitaker_provisioning_envelope.build_whitaker_provisioning_envelope`. It
   reuses the CV-005 workflow decoder for `.github/workflows`, decodes every
@@ -737,8 +764,9 @@ listed here; the CodeScene coverage and Dependabot kinds are described after
   `concordat.rules.whitaker_revisions` (owner: the whitaker-provisioning
   package; callers: `scripts/whitaker_revisions.py` and its tests only). It
   walks shared-actions main first-parent and keeps each commit that is an
-  approved root, or descends from one with the action directory's Git tree id
-  equal to that root's. After shared-actions gains commits, run
+  approved root, or descends from one with the action directory's runtime
+  digest (every file except `tests/` and Markdown) equal to that root's. After
+  shared-actions gains commits, run
   `uv run python scripts/whitaker_revisions.py sync <shared-actions clone>`,
   then commit the regenerated `rule.yaml` and refresh its digest in the canon
   manifest. `check <clone>` exits 1 and names each missing or non-derivable
@@ -750,19 +778,26 @@ listed here; the CodeScene coverage and Dependabot kinds are described after
   first. Git read failures while walking the history surface as
   `OperationalRuleError`, never a traceback. The reviewed revision snapshot
   under `tests/fixtures/whitaker/` is an independent oracle for the complete
-  shipped list. Its commit, first-parent and action-tree records come directly
+  shipped list. Its commit, first-parent and runtime-record data come directly
   from a full shared-actions clone, not from the rule manifest or its
   generator. When refreshing the list, capture the root-to-tip first-parent
   segment with `git rev-list --first-parent`, record each commit's first parent
-  and action-directory tree with `git rev-parse`, and verify each tree against
-  the approved root. Update the snapshot's frozen tip and the provenance
-  assertions in `tests/unit/test_whitaker_revision_snapshot.py` only after
-  reviewing that history. If action contents change, retain the approved-root
-  review boundary rather than extending this content-identical snapshot. The
-  tests compare the entire ordered list, evaluate every recorded pin through
-  QG-002, and require rejection when manifest entries are removed or altered.
-  The shared batch helper accepts the runner's envelope union so these
-  provisioning envelopes reuse its existing result-to-file completeness checks.
+  with `git rev-parse`, and capture the root's runtime records with
+  `git ls-tree -r` (dropping `tests/` and Markdown paths, formatting each as
+  `<mode> <blob> <path>` and sorting bytewise). Eligibility is the runtime
+  digest, the SHA-256 of those records, so verify each commit's digest against
+  the approved root; the action-directory tree id stays as provenance only.
+  Approving a root also needs a human check that its runtime files reach
+  excluded content (tests or Markdown) by no indirect route, such as a glob or
+  a computed path: the automatic scan only refuses literal `tests/` and `.md`
+  mentions. Update the snapshot's frozen tip and the provenance assertions in
+  `tests/unit/test_whitaker_revision_snapshot.py` only after reviewing that
+  history. If action contents change, retain the approved-root review boundary
+  rather than extending this content-identical snapshot. The tests compare the
+  entire ordered list, evaluate every recorded pin through QG-002, and require
+  rejection when manifest entries are removed or altered. The shared batch
+  helper accepts the runner's envelope union so these provisioning envelopes
+  reuse its existing result-to-file completeness checks.
 - `policy-input/markdown-formatting-baseline` —
   `markdown_envelope.build_markdown_envelope`. Alongside the same `makeutil`
   report for the root `Makefile`, it carries `.markdownlint-cli2.jsonc` decoded

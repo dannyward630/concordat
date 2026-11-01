@@ -549,7 +549,15 @@ actuators that remediate them. Each check ships as a lint rule package under
   leynos/theoremc's main give the expected result for every case, and the
   fixture-lock package's exemptions do not reach it. Promotion to `error` is a
   separate change made once the estate survey is clean. Fixture manifest
-  coverage, nextest configuration and CI wiring follow as separate packages.
+  coverage (NC-003, `nested-cargo-fixture-manifests`) is shipped as the third:
+  every standalone manifest with a registry dependency is covered by a `cargo`
+  entry of `dependabot.yml`. The nextest configuration check (NC-004, NC-005,
+  `nested-cargo-nextest`) is the fourth: where Rust tests spawn `cargo` or
+  `rustc`, the configuration serializes them, sets a `slow-timeout` and a
+  `global-timeout`, and names each spawning test binary in a grouped override.
+  The CI wiring check (NC-006, `nested-cargo-ci-wiring`) is the fourth: no
+  workflow sets `CARGO_TARGET_DIR` to a per-run or temporary path, and a job
+  that opts out of `setup-rust`'s wrapper export names `RUSTC_WRAPPER` itself.
 - [ ] Ship the Dependabot governance rule packages (DB-001 to DB-004):
   manifest-scan sensor diffing package roots against `dependabot.yml` entries,
   cooldown policy checks (tiered for semver ecosystems, `default-days` for

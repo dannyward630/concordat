@@ -407,17 +407,35 @@ A relationship applies only where the repository declares every member:
   the group by `serde-pyobject`, not by the alias, and an `ignore` rule would
   freeze the pair rather than move it;
 - independently versioned packages (for example maturin with PyO3) need an upper
-  bound or an `ignore` rule on a member (DF-002); an exact pin is not one;
+  bound or an `ignore` rule on a member, or every member in one multi-ecosystem
+  group (DF-002); an exact pin is not one. A multi-ecosystem group counts only
+  when its whole chain holds: each member's entry names a group the file
+  defines under `multi-ecosystem-groups`, the entry's `patterns` take the
+  member, and all members name the same group. Dependabot then raises one pull
+  request for the group, so one CI run sees the tuple; it does not choose
+  compatible versions. The same shared group also takes a family together
+  (DF-001 and DF-003). Dependabot builds one job per entry, and an entry that
+  joins a group runs only that group, over the dependencies its `patterns`
+  take, so the rule reads the first entry covering a directory that actually
+  processes each package: a group entry for what its `patterns` take, otherwise
+  the first entry that does not ignore it. An ecosystem that needs the rest of
+  its dependencies updated keeps a second, plain entry beside the group entry,
+  ignoring the group's members;
 - a missing configuration, an unreadable manifest or lock, a Python project
   outside the root, or a Cargo manifest outside the governed Rust surfaces is
   reported as indeterminate (DF-006). A repository that has not declared
-  `language.rust.surfaces` is read at its root only. Each nested `Cargo.toml`
-  (hidden, `target`, `vendor`, `node_modules` and similar trees excepted) is
-  then read loosely: one that declares a package a recorded relationship names,
-  or that cannot be read or decoded, is named and makes the result
-  indeterminate until the repository declares its surfaces. A nested manifest
-  that names no related package draws nothing. A directory that cannot be
-  listed during that scan is reported the same way.
+  `language.rust.surfaces` is read at its root only. The members of a governed
+  workspace root (its `members` globs, less `exclude`) are read too, for these
+  facts only: they are not Rust surfaces, which other rules judge as project
+  roots, so a workspace needs no member declared. Each other nested
+  `Cargo.toml` (hidden, `target`, `vendor`, `node_modules` and similar trees
+  excepted) is then read loosely: one that declares a package a recorded
+  relationship names, or that cannot be read or decoded, is named and makes the
+  result indeterminate until the repository declares its surfaces. A member
+  that cannot be read is reported the same way, and a `members` glob that is
+  absolute or leaves the checkout is ignored. A nested manifest that names no
+  related package draws nothing. A directory that cannot be listed during that
+  scan is reported the same way.
 
 To keep an older generation deliberately, record an exception in `.concordat`:
 
@@ -783,6 +801,79 @@ evidence the reader could not establish stays reported. The shipped defaults
 record leynos/whitaker's `installer/src/builder.rs`, which builds its own copy
 of the crate from crates.io — the behaviour the installer exists to prove.
 
+### Auditing nested cargo fixture manifests
+
+The `nested-cargo-fixture-manifests` rule keeps fixture dependencies updated:
+
+```shell
+concordat artefact rule run nested-cargo-fixture-manifests --repo /path/to/checkout
+```
+
+**NC-003** reports a `Cargo.toml` below the root that no workspace owns, and
+that declares a registry dependency (itself, or in a workspace it roots), when
+no `cargo` entry of `.github/dependabot.yml` covers its directory. Dependabot
+reads only the directories it is told about, and `directory: "/"` covers the
+root manifest alone, so list the fixture's directory or a glob that reaches it
+(`/tests/fixtures/*`). Path, git and `workspace = true` dependencies have
+nothing to update and draw nothing. With no Dependabot configuration every such
+manifest is uncovered; a configuration that cannot be decoded is indeterminate.
+
+A manifest left alone on purpose is named in the rule's `exemptions` parameter
+with its repository (`owner/name`), directory, rationale and review trigger; a
+blank rationale or trigger suppresses nothing. Three ship by default, for
+rstest-bdd's derived `published-gpui-e2e` fixture, the vendored Telegram crypto
+patch (axinite) and `feldera-size-of` (lille) fork. The rule ships at `warning`
+severity, so findings are reported and the exit status stays 0; set the
+`severity` parameter to `error` to enforce it. The audit reads the working tree
+below the root, skipping hidden, `target`, `vendor` and similar directories.
+
+### Auditing the nextest configuration of compiler-spawning tests
+
+The `nested-cargo-nextest` rule keeps compiler work inside tests bounded:
+
+```shell
+concordat artefact rule run nested-cargo-nextest --repo /path/to/checkout
+```
+
+When a Rust test spawns `cargo build` (or another compiling subcommand) or
+`rustc`, a cold build inside a timed test looks like a hang. **NC-004** reports
+a missing piece of `.config/nextest.toml`: a test group with `max-threads = 1`,
+an override that places tests in it, a `slow-timeout` (in a profile or an
+override) and a `global-timeout` (in a profile). **NC-005** reports a top-level
+`tests/<stem>.rs` that spawns a compiler but is not named, by binary or test
+function, in a serial group's override filter, so the group never holds it.
+
+The scan is textual and conservative: only test code counts, `cargo metadata`
+and similar do not, Python tests are left to pytest, and a helper under `src/`
+or `tests/support/` is judged by the repository-level pieces alone. A test
+bounded some other way is named in the `exemptions` parameter with its
+repository, path, rationale and review trigger (a blank rationale or trigger
+suppresses nothing). The rule ships at `warning` severity, so findings are
+reported and the exit status stays 0; set the `severity` parameter to `error`
+to enforce it. See the
+[rule reference](../platform-standards/canon/lint-rules/nested-cargo-nextest/README.md)
+for the precise scan.
+
+### Auditing the CI wiring of nested cargo builds
+
+The `nested-cargo-ci-wiring` rule keeps a child `cargo` on the job's warm cache:
+
+```shell
+concordat artefact rule run nested-cargo-ci-wiring --repo /path/to/checkout
+```
+
+**NC-006** reports a workflow that sets `CARGO_TARGET_DIR` to a per-run or
+temporary path (`runner.temp`, the run id or number, the commit SHA, `mktemp`,
+`/tmp`, a command substitution), whether in an `env` block or a `run` script,
+and a job whose `setup-rust` step sets `export-rustc-wrapper: false` while
+`RUSTC_WRAPPER` is named nowhere in the workflow or job. `setup-rust` exports
+the wrapper through `GITHUB_ENV` by default, which reaches every later step, so
+the rule does not ask for a job-level `env`. The opt-out is documented for
+nested builds such as trybuild fixtures; scope the wrapper to the commands that
+should use it (`RUSTC_WRAPPER="$SCCACHE_PATH" cargo test`) and the job passes.
+The `temporary_patterns` and `exemptions` parameters tune the check; an
+exemption names the repository, workflow and reason.
+
 ### Auditing Rust development build storage
 
 The `rust-dev-build-footprint` rule keeps default development builds small:
@@ -946,6 +1037,30 @@ which 0.1.1 never opened.
   literally, as `$(MAKE) target`, to have it followed.
 - Clauses BD-001 to BD-006 read the same files as before, so their verdicts do
   not change.
+
+Upgrading to rule 0.3.0: a repository can pass where 0.2.1 reported BD-008 or
+report where it did not, in the two Whitaker cases below.
+
+- An installer-managed Whitaker that follows `cd`, `unset` or an environment
+  assignment in an `&&` chain is now recognized as an isolated route, and
+  judged as one (development flags on it are contamination). A recipe that
+  first changes into the parent of the checkout (`cd ..`,
+  `cd "$(dir $(CURDIR))"`) no longer reads as unproved when the checkout's
+  `.cargo/config.toml` selects Cranelift, because Cargo never discovers that
+  file from there. The working directory is tracked in order, so
+  `cd crates && cd ..` is back in the checkout and does not count. A Cranelift
+  selection in the root `Cargo.toml` still does.
+- A repository whose fast route is explicit and kept out of Cargo's
+  auto-discovered configuration on purpose (cuprum's `make dev-*` fragment,
+  ADR-012) records the exception in `.concordat` under
+  `language.rust.build_defaults.exceptions`: the `clauses` it waives, the
+  `route` (a Cargo configuration carrying `-Zthreads=8` in every `rustflags`
+  source and the Linux linker), the `adr` that records the decision, a
+  `rationale` and a `review_trigger`. The route must be a configuration Cargo
+  can load, and the linker must be named only in sources that apply to Linux
+  alone (`cfg(unix)` also reaches macOS). BD-010 reports an exception whose
+  route, record, rationale or trigger is missing, or that names a clause outside
+  `waivable_clauses`, and the clauses keep reporting until it is substantiated.
 
 ### Auditing the spelling gate
 

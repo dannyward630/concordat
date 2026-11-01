@@ -1898,7 +1898,7 @@ the dependency-pin actionability checks.
 | DB-004       | Lockfile-wide dependency audits do not gate Dependabot pull requests, and a scheduled audit workflow exists to cover the gap.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Quality-Gate Integrity          | OPA/Conftest                                                        | warning              | 4                        |
 | DB-005       | Every Dependabot `updates` entry runs daily and ends with one catch-all group (`patterns: ["*"]`, `update-types: [minor, patch]`), any earlier group being narrower than `*`; `github-actions` entries cover `/` and every local action under `.github/actions`; cargo `versioning-strategy` is `auto` or `lockfile-only`.                                                                                                                                                                                                                                                                                                          | Quality-Gate Integrity          | OPA/Conftest (`dependabot-update-shape`)                            | error                | 4                        |
 | DF-001       | A recorded family or type-identity relationship (for example `pyo3` with `pyo3-build-config`) is taken together by one narrow Dependabot group ahead of the catch-all, matched on the published package names; report-only.                                                                                                                                                                                                                                                                                                                                                                                                         | Quality-Gate Integrity          | OPA/Conftest (`dependency-family-contracts`)                        | error                | 4                        |
-| DF-002       | A recorded tuple of independently versioned packages (for example maturin with PyO3) has an upper bound or an `ignore` rule on a member; an exact pin is not protection; report-only.                                                                                                                                                                                                                                                                                                                                                                                                                                               | Quality-Gate Integrity          | OPA/Conftest (`dependency-family-contracts`)                        | error                | 4                        |
+| DF-002       | A recorded tuple of independently versioned packages (for example maturin with PyO3) has an upper bound or an `ignore` rule on a member, or every member in one defined multi-ecosystem Dependabot group; an exact pin is not protection; report-only.                                                                                                                                                                                                                                                                                                                                                                              | Quality-Gate Integrity          | OPA/Conftest (`dependency-family-contracts`)                        | error                | 4                        |
 | DF-003       | A narrow group that matches every member of a recorded family is not shadowed by an earlier group; report-only.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Quality-Gate Integrity          | OPA/Conftest (`dependency-family-contracts`)                        | error                | 4                        |
 | DF-006       | The facts a dependency relationship needs could be established: a decodable Dependabot configuration, readable manifests and, for type identity, a lock. Missing evidence is indeterminate, never compliant.                                                                                                                                                                                                                                                                                                                                                                                                                        | Quality-Gate Integrity          | OPA/Conftest (`dependency-family-contracts`)                        | error                | 4                        |
 | MT-001       | A scheduled mutation-testing workflow exists and calls the pinned shared mutation-testing workflow; mutation testing is scheduled, not merge-blocking.                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | Quality-Gate Integrity          | OPA/Conftest + file presence                                        | warning              | 4                        |
@@ -1985,15 +1985,22 @@ by the action itself.
 
 The listed revisions are derived, not named one by one. A revision qualifies
 when it is a first-parent commit on shared-actions `main` that is an approved
-root, or descends from one and leaves the `install-whitaker` directory's Git
-tree id equal to that root's, so the action a consumer runs is the reviewed one
-whatever else changed in shared-actions. The list is generated offline, from a
-shared-actions clone, and committed in the rule's manifest, rather than looked
-up through the GitHub API at audit time: the audited checkout holds no
-shared-actions history, an offline derivation is verifiable in the rule's own
-tests, and the audit gains no network dependency or rate-limit budget. The cost
-is that the list is regenerated after shared-actions gains commits; a changed
-action directory stays refused until a reviewer adds it as a root.
+root, or descends from one and leaves the `install-whitaker` directory's
+runtime digest equal to that root's, so the action a consumer runs is the
+reviewed one whatever else changed in shared-actions. The digest covers every
+file in the directory except the `tests/` tree and Markdown files, which the
+action does not execute; a reviewer confirms that when approving a root. The
+list is generated offline, from a shared-actions clone, and committed in the
+rule's manifest, rather than looked up through the GitHub API at audit time:
+the audited checkout holds no shared-actions history, an offline derivation is
+verifiable in the rule's own tests, and the audit gains no network dependency
+or rate-limit budget. The cost is that the list is regenerated after
+shared-actions gains commits; a change to the action's runtime content stays
+refused until a reviewer adds it as a root. A root whose runtime files mention
+`tests/` or a Markdown path is refused, because a script could otherwise run or
+read content the digest ignores. The scan is a guard, not a dependency
+analysis; it misses an indirect reference such as a glob, so the root review
+also checks that no runtime file reaches excluded content.
 
 Rule version 0.3.2 refines three of QG-001's textual readings so that they
 match what the shell executes; run against netsuke's Makefile, the older
@@ -2213,23 +2220,34 @@ type identity need their members taken together by one narrow group ahead of
 the catch-all (DF-001, and DF-003 when an earlier group shadows it);
 independently versioned packages such as maturin and PyO3 form a supported
 tuple that a group cannot select, so a member needs an upper bound or an
-`ignore` rule and an exact pin is not protection (DF-002); a tool pin and its
-generated inputs, and a behavioural migration, need their own checks and are
-left to later work. The envelope builder collects the facts outside policy
-evaluation: declarations from every governed Cargo surface (reusing the nested
-surface resolver) and the root `pyproject.toml`, each with its section, target,
-optionality, published package identity (a renamed dependency resolves to the
-name Dependabot matches), requirement, locked versions, and the covering
-`updates` entry, first-matching group and `ignore` rule. A relationship applies
-only where the repository declares every member, and a Cargo manifest that no
-declared surface governs is a problem fact, rather than an unread pass, when it
-declares a package a relationship names or cannot be decoded (a repository
-without `language.rust.surfaces` is read at its root only), so unrelated
-duplicate crate versions and a copied wheel template in a pure-Python
-repository draw no finding. A repository may stay on an older generation by
-recording an exception in `.concordat` under `dependencies.family_exceptions`,
-naming the relationship, a rationale and a review trigger. Missing facts are
-DF-006 indeterminate findings, never passes.
+`ignore` rule, or every member must join one multi-ecosystem group so that the
+update arrives as a single pull request (DF-002), and an exact pin is not
+protection (the same shared group takes a family together, DF-001). Dependabot
+builds one job per entry and an entry that joins a group runs only that group,
+so the collector reads, among the entries covering a directory, the first that
+processes each package: a group entry for what its `patterns` take, otherwise
+one that does not ignore it; a tool pin and its generated inputs, and a
+behavioural migration, need their own checks and are left to later work. The
+envelope builder collects the facts outside policy evaluation: declarations
+from every governed Cargo surface (reusing the nested surface resolver) and the
+root `pyproject.toml`, each with its section, target, optionality, published
+package identity (a renamed dependency resolves to the name Dependabot
+matches), requirement, locked versions, and the covering `updates` entry,
+first-matching group, `ignore` rule and the multi-ecosystem group the entry
+joins for the package (named only when the file defines the group and the
+entry's `patterns` take the package). A relationship applies only where the
+repository declares every member, and a Cargo manifest that no declared surface
+governs is a problem fact, rather than an unread pass, when it declares a
+package a relationship names or cannot be decoded (a repository without
+`language.rust.surfaces` is read at its root only), except that the members of
+a governed workspace root are read through it, for these facts only. They are
+deliberately not Rust surfaces: the footprint and Makefile rules judge a
+surface as a project root, so declaring a member would make them ask for its
+governing workspace instead. Unrelated duplicate crate versions and a copied
+wheel template in a pure-Python repository draw no finding. A repository may
+stay on an older generation by recording an exception in `.concordat` under
+`dependencies.family_exceptions`, naming the relationship, a rationale and a
+review trigger. Missing facts are DF-006 indeterminate findings, never passes.
 
 ##### Rust toolchain policy (RT-022 through RT-027)
 
@@ -2969,6 +2987,74 @@ field of the wrong type is rejected alongside a missing one: `sprintf("%d", …)
 with a string line prints `%!d(string=80)` where a location belongs. The
 malformed fact is reported once as an envelope error, and the ordinary findings
 skip it, rather than the same fact drawing both an error and a garbled warning.
+
+##### Nested cargo fixture manifests
+
+NC-003 (`nested-cargo-fixture-manifests`) asks the question NC-001 cannot: is
+the fixture's dependency graph kept current at all? A standalone manifest with
+a registry dependency must be reached by a `cargo` entry of `dependabot.yml`,
+because Dependabot reads only the directories it is given and `/` covers the
+root manifest alone. The policy reuses the dependency-family coverage matcher
+so a glob means the same thing in both packages. Workspace roots and members,
+and manifests whose dependencies are all path, git or inherited, are not
+candidates. netsuke's own contract reads tracked manifests through Git; this
+package reads the working tree below the root with the shared skip list,
+because the audited checkout need not be a Git checkout. Exemptions follow the
+same convention as NC-001: repository, directory, rationale and review trigger,
+matched against the `origin` slug, and a blank rationale or trigger suppresses
+nothing. The package ships at `warning` severity through a `severity`
+parameter, as `nested-cargo-offline-tests` does, because the estate survey
+found five repositories with uncovered manifests; promotion to `error` follows
+once they are clean. Dependency tables are read through `cargo_tables`, so a
+registry dependency under `[target.'cfg(...)'.dependencies]` makes a candidate.
+
+##### Nested cargo nextest configuration
+
+NC-004 and NC-005 (`nested-cargo-nextest`) bound compiler work in tests. The
+rule's first problem is deciding that a repository has such tests without
+demanding configuration of those that do not, so the scan is a source scan with
+four narrowings: test code only, compiling subcommands only (`cargo metadata`
+is not compilation), a `Command` in the file, and no Python (pytest bounds
+those). Test code is a test directory's whole file, or the braces of an item
+marked `#[cfg(test)]` (read from the masked source, so a marker in a comment or
+a brace in a string moves nothing); production code after a closed `mod tests`
+is not test code. A compiling argument counts only when it belongs to the same
+command as the spawn: it is read from the spawn to the next `Command::new` or
+the next function item, and a command bound to a name and handed to a function
+defined in the same file is also read against that function's body, because the
+callee adds the arguments. A callee in another file is not seen, which errs
+towards not demanding configuration. The configuration facts are the ones
+netsuke and rstest-bdd converged on: a serial group, an override that uses it,
+an explicit `slow-timeout` (profile or override) and a `global-timeout` (any
+profile, since netsuke sets it on `ci`). A top-level test binary must also be
+named by a grouped override's filter, by binary or by one of its functions,
+which is how ortho-config's BDD suite is told apart from netsuke's. The package
+does not evaluate nextest filtersets: a name appearing in a grouped filter is
+the evidence, which is cheap and errs towards acceptance. The name must be a
+whole word inside a `binary()`, `binary_id()` or `test()` predicate, so
+`binary(ui_extra)` does not name `ui`, and a regex argument such as
+`/^name($|::)/` is read whole. Exemptions name a test source and follow the
+NC-001 convention: repository, path, rationale and review trigger, where a
+blank rationale or trigger suppresses nothing. The package ships at `warning`
+severity through a `severity` parameter, as `nested-cargo-offline-tests` does,
+because the estate survey found configuration gaps in a dozen repositories;
+promotion to `error` follows once they are clean.
+
+##### Nested cargo CI wiring
+
+NC-006 (`nested-cargo-ci-wiring`) reads the CI side of the same problem. The
+first draft of the check asked for the sccache environment at job level so a
+child `cargo` would inherit it. `setup-rust` already exports `RUSTC_WRAPPER`
+through `GITHUB_ENV` after its sccache steps, which reaches every later step
+and so every child `cargo`; demanding a job-level copy would add configuration
+that changes nothing. The rule therefore checks what can actually break
+inheritance: a `CARGO_TARGET_DIR` pointed at a per-run or temporary path, and a
+silent `export-rustc-wrapper: false`. The action documents that opt-out for
+nested builds such as trybuild fixtures (each compile is a miss that is also
+stored), so a job that opts out and scopes the wrapper itself passes.
+Temporary-path patterns and exemptions are rule parameters. No estate workflow
+trips the rule today, so its proof is synthetic; the corpus holds no real bad
+instance.
 
 #### 3.1.4 Verifying the reconciliation invariants
 

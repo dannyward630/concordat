@@ -3,7 +3,8 @@
 The coverage fact answers three questions for one package in one directory:
 which `updates` entry covers the directory, which group takes the package first
 (document order is part of the configuration's meaning, so a narrow group must
-precede a catch-all), and whether an `ignore` rule names it. Python names are
+precede a catch-all), whether an `ignore` rule names it, and which
+multi-ecosystem group, if any, the entry joins for it. Python names are
 compared in their PEP 503 form, as Dependabot does for pip and uv.
 """
 
@@ -29,6 +30,7 @@ class Coverage(typ.TypedDict):
     matching: list[str]
     matching_narrow: list[str]
     ignored: bool
+    multi_group: str | None
     reason: str | None
 
 
@@ -141,6 +143,7 @@ def _missing_coverage(reason: str) -> Coverage:
         "matching": [],
         "matching_narrow": [],
         "ignored": False,
+        "multi_group": None,
         "reason": reason,
     }
 
@@ -175,19 +178,129 @@ def coverage(
     updates = sequence((mapping(config["parsed"]) or {}).get("updates"))
     if updates is None:
         return _missing_coverage("the Dependabot configuration has no updates")
-    covering = (
-        (index, entry)
-        for directory in directories
-        for index, entry in enumerate(updates)
-        if _entry_covers(entry, ecosystem, directory)
-    )
-    found = next(covering, None)
-    if found is None:
+    python = ecosystem in {"pip", "uv"}
+    covering = _covering_entries(updates, ecosystem, directories)
+    if not covering:
         return _missing_coverage(f"no {ecosystem} entry covers {directories[0]}")
-    index, entry = found
-    table = typ.cast("dict[str, object]", entry)
-    ignored = is_ignored(table, package, python=ecosystem in {"pip", "uv"})
-    return {**_entry_coverage(config, index, table, package), "ignored": ignored}
+    index, table = _handling_entry(config, covering, package, python=python)
+    return {
+        **_entry_coverage(config, index, table, package),
+        "ignored": _is_held_back(config, covering, package, python=python),
+        "multi_group": _multi_group(config, table, package, python=python),
+    }
+
+
+def _is_held_back(
+    config: ConfigFile,
+    covering: list[tuple[int, dict[str, object]]],
+    package: str,
+    *,
+    python: bool,
+) -> bool:
+    """Return whether an `ignore` rule keeps every covering entry off *package*.
+
+    A package one entry ignores and another processes is still updated, so an
+    `ignore` rule protects it only when no covering entry handles it.
+
+    Returns
+    -------
+    bool
+        Whether the package is held back by an `ignore` rule.
+    """
+    if any(_processes(config, entry, package, python=python) for _, entry in covering):
+        return False
+    return any(is_ignored(entry, package, python=python) for _, entry in covering)
+
+
+def _covering_entries(
+    updates: list[object], ecosystem: str, directories: cabc.Sequence[str]
+) -> list[tuple[int, dict[str, object]]]:
+    """Return the entries covering the nearest directory that any entry covers.
+
+    Returns
+    -------
+    list[tuple[int, dict[str, object]]]
+        Index and entry, in document order; empty when none covers a directory.
+    """
+    for directory in directories:
+        found = [
+            (index, typ.cast("dict[str, object]", entry))
+            for index, entry in enumerate(updates)
+            if _entry_covers(entry, ecosystem, directory)
+        ]
+        if found:
+            return found
+    return []
+
+
+def _handling_entry(
+    config: ConfigFile,
+    covering: list[tuple[int, dict[str, object]]],
+    package: str,
+    *,
+    python: bool,
+) -> tuple[int, dict[str, object]]:
+    """Return the first covering entry that processes *package*.
+
+    Dependabot builds one job per entry. An entry that joins a multi-ecosystem
+    group runs only that group, over the dependencies its `patterns` take, and
+    an entry that ignores a package skips it, so the facts belong to the first
+    entry that does neither. When none processes the package the first covering
+    entry answers, and its facts show the package is not taken by any group.
+
+    Returns
+    -------
+    tuple[int, dict[str, object]]
+        The entry's index and mapping.
+    """
+    for index, entry in covering:
+        if _processes(config, entry, package, python=python):
+            return index, entry
+    return covering[0]
+
+
+def _processes(
+    config: ConfigFile, entry: dict[str, object], package: str, *, python: bool
+) -> bool:
+    """Return whether *entry*'s job considers *package* for a version update."""
+    if entry.get("multi-ecosystem-group") is not None:
+        return _multi_group(config, entry, package, python=python) is not None
+    return not is_ignored(entry, package, python=python)
+
+
+def _joined_group(config: ConfigFile, entry: dict[str, object]) -> str | None:
+    """Return the defined multi-ecosystem group *entry* names, if any."""
+    name = entry.get("multi-ecosystem-group")
+    defined = mapping((mapping(config["parsed"]) or {}).get("multi-ecosystem-groups"))
+    if defined is None or not isinstance(name, str):
+        return None
+    return name if name in defined else None
+
+
+def _multi_group(
+    config: ConfigFile, entry: dict[str, object], package: str, *, python: bool
+) -> str | None:
+    """Return the multi-ecosystem group *entry* joins for *package*, if any.
+
+    Dependabot folds the updates of every entry that names one group into a
+    single pull request, so the name is a fact only when the whole chain holds:
+    the entry names a group the file defines at the top level, and the entry's
+    `patterns` take the package. A named but undefined group, or patterns that
+    miss the package, leave it outside the group.
+
+    Returns
+    -------
+    str | None
+        The group name, or None when the package is not in a defined group.
+    """
+    name = _joined_group(config, entry)
+    if name is None:
+        return None
+    wanted = normalise(package) if python else package
+    patterns = [str(pattern) for pattern in sequence(entry.get("patterns")) or []]
+    comparable = [normalise(pattern) if python else pattern for pattern in patterns]
+    taken = any(fnmatch.fnmatchcase(wanted, pattern) for pattern in comparable)
+    return name if taken else None
 
 
 def _matching_groups(
@@ -223,5 +336,6 @@ def _entry_coverage(
         "matching": matching,
         "matching_narrow": narrow,
         "ignored": False,
+        "multi_group": None,
         "reason": None,
     }

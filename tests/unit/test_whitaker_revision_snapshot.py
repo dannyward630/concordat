@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 import pathlib
+import re
 import typing as typ
 
 import pytest
@@ -23,6 +25,7 @@ _SNAPSHOTS: typ.Final = (
     _FIXTURES / "approved-revisions-2aed718.json",
     _FIXTURES / "approved-revisions-d5fded1.json",
     _FIXTURES / "approved-revisions-5a99aed.json",
+    _FIXTURES / "approved-revisions-6e99f22.json",
 )
 
 
@@ -42,6 +45,8 @@ class _Snapshot(typ.TypedDict):
     root: str
     action_directory: str
     action_tree: str
+    runtime_digest: str
+    runtime_records: list[str]
     commits: list[_Commit]
 
 
@@ -95,13 +100,19 @@ def test_snapshot_records_the_complete_reviewed_first_parent_segment(
             "5a99aed78ce68dcebd3052b75c31e6f173162b1e",
             "183e1bb43c8fc198afc79f41482689898eb42efc",
         ),
+        (
+            "6e99f225cb06684f9e6f89b63a7ca4a04095c067",
+            "872f59f53717b5bebe8e24b2f4a7496b089a939a",
+            "68fcb35324561347c569785e422aca109d572538",
+        ),
     ]
-    chain_a, chain_b, chain_c = snapshots
+    chain_a, chain_b, chain_c, chain_d = snapshots
     assert chain_a["commits"][0]["first_parent"] == (
         "774cc5a01e457714aede66e14a97b3e257812fc2"
     )
     assert chain_b["commits"][0]["first_parent"] == chain_a["tip"]
     assert chain_c["commits"][0]["first_parent"] == chain_b["tip"]
+    assert chain_d["commits"][0]["first_parent"] == chain_c["tip"]
     for snapshot in snapshots:
         commits = snapshot["commits"]
         assert snapshot["repository"] == "leynos/shared-actions"
@@ -114,6 +125,47 @@ def test_snapshot_records_the_complete_reviewed_first_parent_segment(
         )
         for parent, child in itertools.pairwise(commits):
             assert child["first_parent"] == parent["revision"]
+
+
+def test_runtime_digests_record_which_chains_run_the_same_action(
+    snapshots: list[_Snapshot],
+) -> None:
+    """Chains c and d differ in `tests/` only, so they share one runtime digest.
+
+    The digests were captured with plain Git plumbing (`ls-tree -r`, drop
+    `tests/` and Markdown, sort `<mode> <blob> <path>` records, SHA-256), not
+    with the module under test. 5a99aed7, 6e99f225 and 872f59f5 run the same
+    `action.yml` and helpers; #652 changed only the action's tests.
+    """
+    digests = [snapshot["runtime_digest"] for snapshot in snapshots]
+    assert all(re.fullmatch(r"[0-9a-f]{64}", digest) for digest in digests)
+    assert len(set(digests)) == 3
+    assert digests[2] == digests[3]
+    assert snapshots[2]["action_tree"] != snapshots[3]["action_tree"]
+
+
+def test_runtime_digests_recompute_from_their_recorded_preimage(
+    snapshots: list[_Snapshot],
+) -> None:
+    """Each digest is the SHA-256 of its sorted `<mode> <blob> <path>` records.
+
+    The records were captured with `git ls-tree -r` at the chain's root, dropping
+    `tests/` and Markdown paths, then sorted bytewise; the digest hashes them
+    joined with a newline after each. Recomputing needs no clone, so a wrong
+    digest or a wrong record fails here.
+    """
+    for snapshot in snapshots:
+        records = snapshot["runtime_records"]
+        assert records == sorted(records)
+        assert all(
+            re.fullmatch(r"\d{6} [0-9a-f]{40} \S+", record) for record in records
+        )
+        assert not any(
+            record.split(" ", 2)[2].startswith("tests/") or record.endswith(".md")
+            for record in records
+        )
+        preimage = "".join(f"{record}\n" for record in records).encode()
+        assert hashlib.sha256(preimage).hexdigest() == snapshot["runtime_digest"]
 
 
 def test_shipped_defaults_equal_the_independent_complete_history(

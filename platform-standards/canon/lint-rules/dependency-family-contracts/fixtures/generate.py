@@ -82,6 +82,43 @@ def dependabot(
     )
 
 
+def define_multi(config: str, definition: str) -> str:
+    """Return *config* with the top-level multi-ecosystem groups *definition*."""
+    return config.replace("version: 2\n", "version: 2\n" + definition, 1)
+
+
+def entries_of(config: str) -> str:
+    """Return the `updates` entries of *config*, without its header."""
+    return config.split("updates:\n", 1)[1]
+
+
+def two_entry_config(group_entries: str, plain_entries: str) -> str:
+    """Return a config listing the group entries before the plain ones."""
+    return define_multi(
+        "version: 2\nupdates:\n" + group_entries + entries_of(plain_entries),
+        MULTI_DEFINITION,
+    )
+
+
+def maturin_with_multi(
+    definition: str, cargo_join: str, maturin_join: str
+) -> dict[str, str]:
+    """Return a maturin and PyO3 checkout whose entries join the given groups."""
+    config = (
+        dependabot(NARROW_FAMILY + CATCH_ALL, extra=cargo_join)
+        + PIP_ENTRY
+        + CATCH_ALL
+        + maturin_join
+    )
+    return {
+        **base(),
+        "pyproject.toml": MATURIN_PYPROJECT.format(spec="==1.13.3"),
+        ".github/dependabot.yml": define_multi(config, definition)
+        if definition
+        else config,
+    }
+
+
 def base(
     groups: str = NARROW_FAMILY + CATCH_ALL, *, cargo: str = CARGO, lock: str = LOCK
 ) -> dict[str, str]:
@@ -107,6 +144,12 @@ def with_files(files: dict[str, str], **overrides: str | None) -> dict[str, str]
 
 SERDE_LOCK = LOCK + '\n[[package]]\nname = "serde-pyobject"\nversion = "0.8.0"\n'
 SERDE_CARGO = CARGO + 'pyo3-serde = { package = "serde-pyobject", version = "0.8.0" }\n'
+PYTEST_PYPROJECT = """\
+[project]
+name = "demo"
+version = "0.1.0"
+dependencies = ["maturin==1.13.3", "pytest==9.1.1", "pytest-bdd==9.0.0"]
+"""
 MATURIN_PYPROJECT = """\
 [project]
 name = "demo"
@@ -168,6 +211,15 @@ SHADOWING = """\
         patterns: ['pyo3', 'pyo3-build-config']
 """
 
+ROOT_WORKSPACE = """\
+[workspace]
+members = ["native"]
+
+[workspace.dependencies]
+pyo3 = "0.28.3"
+pyo3-build-config = "0.28.3"
+"""
+
 SURFACES = (
     "language:\n  rust:\n    surfaces:\n"
     "      - path: rust/Cargo.toml\n      - path: rust/native/Cargo.toml\n"
@@ -175,6 +227,38 @@ SURFACES = (
 PIP_ENTRY = (
     "  - package-ecosystem: pip\n    directory: /\n"
     "    schedule:\n      interval: daily\n    groups:\n"
+)
+MULTI_DEFINITION = (
+    "multi-ecosystem-groups:\n  maturin-pyo3:\n    schedule:\n      interval: daily\n"
+)
+OTHER_DEFINITION = (
+    MULTI_DEFINITION + "  other-group:\n    schedule:\n      interval: daily\n"
+)
+CARGO_GROUP_ENTRY = (
+    "  - package-ecosystem: cargo\n    directory: /\n"
+    "    multi-ecosystem-group: maturin-pyo3\n"
+    "    patterns: ['pyo3', 'pyo3-build-config']\n"
+)
+CARGO_GROUP_ENTRY_PYO3_ONLY = (
+    "  - package-ecosystem: cargo\n    directory: /\n"
+    "    multi-ecosystem-group: maturin-pyo3\n    patterns: ['pyo3']\n"
+)
+IGNORE_FAMILY = (
+    "    ignore:\n      - dependency-name: pyo3\n"
+    "      - dependency-name: pyo3-build-config\n"
+)
+IGNORE_MATURIN = "    ignore:\n      - dependency-name: maturin\n"
+PIP_GROUP_ENTRY = (
+    "  - package-ecosystem: pip\n    directory: /\n"
+    "    multi-ecosystem-group: maturin-pyo3\n    patterns: ['maturin']\n"
+)
+JOIN_PYO3 = "    multi-ecosystem-group: maturin-pyo3\n    patterns: ['pyo3']\n"
+JOIN_MATURIN = "    multi-ecosystem-group: maturin-pyo3\n    patterns: ['maturin']\n"
+JOIN_MATURIN_ELSEWHERE = (
+    "    multi-ecosystem-group: other-group\n    patterns: ['maturin']\n"
+)
+JOIN_MATURIN_MISSING = (
+    "    multi-ecosystem-group: maturin-pyo3\n    patterns: ['pytest']\n"
 )
 SERDE_IGNORE = (
     "    ignore:\n      - dependency-name: {name}\n        versions: ['>=0.9']\n"
@@ -229,6 +313,20 @@ SCENARIOS: dict[str, dict[str, str]] = {
             NARROW_FAMILY + CATCH_ALL, directory="/rust"
         ),
     },
+    # A member of the root workspace is read through it, undeclared: the split
+    # is seen in the member, and the grouped variant is clean.
+    "workspace_member_split": {
+        "Cargo.toml": ROOT_WORKSPACE,
+        "native/Cargo.toml": NESTED_MEMBER,
+        "Cargo.lock": LOCK,
+        ".github/dependabot.yml": dependabot(CATCH_ALL),
+    },
+    "workspace_member_grouped": {
+        "Cargo.toml": ROOT_WORKSPACE,
+        "native/Cargo.toml": NESTED_MEMBER,
+        "Cargo.lock": LOCK,
+        ".github/dependabot.yml": dependabot(NARROW_FAMILY + CATCH_ALL),
+    },
     # A renamed bridge: Dependabot matches the published name, not the alias.
     "renamed_bridge_unprotected": base(
         NARROW_FAMILY + CATCH_ALL, cargo=SERDE_CARGO, lock=SERDE_LOCK
@@ -263,6 +361,64 @@ SCENARIOS: dict[str, dict[str, str]] = {
         ".github/dependabot.yml": dependabot(NARROW_FAMILY + CATCH_ALL)
         + PIP_ENTRY
         + CATCH_ALL,
+    },
+    # One multi-ecosystem group takes maturin and PyO3 into a single pull
+    # request, so one CI run sees the pair: protected without a bound.
+    "maturin_multi_group": maturin_with_multi(
+        MULTI_DEFINITION, JOIN_PYO3, JOIN_MATURIN
+    ),
+    # Only PyO3's entry joins: maturin still arrives alone.
+    "maturin_multi_group_one_member": maturin_with_multi(
+        MULTI_DEFINITION, JOIN_PYO3, ""
+    ),
+    # The members join different groups, so they arrive in different pull requests.
+    "maturin_multi_group_split": maturin_with_multi(
+        OTHER_DEFINITION, JOIN_PYO3, JOIN_MATURIN_ELSEWHERE
+    ),
+    # The entries name a group the file never defines: Dependabot rejects it.
+    "maturin_multi_group_undefined": maturin_with_multi("", JOIN_PYO3, JOIN_MATURIN),
+    # The group is defined and joined, but its patterns do not take maturin.
+    "maturin_multi_group_patterns_miss": maturin_with_multi(
+        MULTI_DEFINITION, JOIN_PYO3, JOIN_MATURIN_MISSING
+    ),
+    # The shape Dependabot needs: an entry that joins a group runs only that
+    # group, so each ecosystem also keeps a plain entry (ignoring the member)
+    # for everything else. The group entry comes first; the plain entry supplies
+    # the groups for the rest. The family and the tuple are both protected.
+    "maturin_two_entries": {
+        **base(),
+        "pyproject.toml": MATURIN_PYPROJECT.format(spec="==1.13.3"),
+        ".github/dependabot.yml": two_entry_config(
+            CARGO_GROUP_ENTRY + PIP_GROUP_ENTRY,
+            dependabot(NARROW_FAMILY + CATCH_ALL, extra=IGNORE_FAMILY)
+            + PIP_ENTRY
+            + CATCH_ALL
+            + IGNORE_MATURIN,
+        ),
+    },
+    # The femtologging shape: pytest-bdd is ignored in the plain entry and the
+    # group entry does not take it, so nothing updates it and the pytest tuple
+    # is held back.
+    "pytest_bdd_ignored_beside_group_entry": {
+        "pyproject.toml": PYTEST_PYPROJECT,
+        ".github/dependabot.yml": define_multi(
+            "version: 2\nupdates:\n"
+            + PIP_GROUP_ENTRY
+            + "  - package-ecosystem: pip\n    directory: /\n"
+            "    schedule:\n      interval: daily\n    groups:\n"
+            + CATCH_ALL
+            + "    ignore:\n      - dependency-name: pytest-bdd\n",
+            MULTI_DEFINITION,
+        ),
+    },
+    # The merged cuprum shape: a lone group entry leaves the rest of the
+    # ecosystem unhandled, so a family that needs a narrow group reads as split.
+    "family_lone_group_entry": {
+        **base(),
+        ".github/dependabot.yml": define_multi(
+            "version: 2\nupdates:\n" + CARGO_GROUP_ENTRY_PYO3_ONLY,
+            MULTI_DEFINITION,
+        ),
     },
     # A pure-Python repository with a copied wheel template: PyO3 is absent, so
     # the maturin relationship does not apply and no lockstep is invented.

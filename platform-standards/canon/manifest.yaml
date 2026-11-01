@@ -132,7 +132,7 @@ artifacts:
       Sensor policy for the rust-build-defaults rule package: the parallel
       frontend and linker defaults, the rustflags sources held equal, and the
       codegen backend configured or refused by a recorded exception.
-    sha256: a89dd89c73d4ecef4ac89ba07e558858e6ab2a02166666f733b78330200a2514
+    sha256: 3bae82abf4a827c448a1ada0515274a66d19050928d9514172264d80c5b18cc6
   - id: lint-rule-rust-build-defaults-build-paths-make
     type: opa-policy
     path: >-
@@ -141,14 +141,21 @@ artifacts:
       Makefile half of rust-build-defaults BD-007 and BD-008: coverage
       recipes select LLVM where Cranelift is the default, and gate recipes
       that assign RUSTFLAGS restate the fast flags.
-    sha256: 3c4426d29d44d0454a959447b2f9e716c42e4aa656de8c2c52a383937d20bba9
+    sha256: 7f8fd6a644fa6a5431aaeab8c75503c66fa06b3738cab39487d8c50ea6202e90
   - id: lint-rule-rust-build-defaults-isolated-whitaker
     type: opa-policy
     path: >-
       platform-standards/canon/lint-rules/rust-build-defaults/policy/isolated_whitaker.rego
     description: >
       BD-008 direct Whitaker recognition and binding toolchain isolation.
-    sha256: daa8153d5f2344377ec2e08274d8b4f4ac64c14ff7e37a3bdeb1b97b5dc74b74
+    sha256: f5c84bbe9c749d193f2781116bca12caebd1916b87c0d28c55074cc5458ecdd6
+  - id: lint-rule-rust-build-defaults-standard-exceptions
+    type: opa-policy
+    path: platform-standards/canon/lint-rules/rust-build-defaults/policy/standard_exceptions.rego
+    description: >
+      BD-010 recorded exceptions to the build standard: a substantiated
+      exception in .concordat waives its clauses.
+    sha256: 54664e1b2408b1a9490ba712dc084a8829c6d75cdd9895bd20a98c5f363d1c1b
   - id: lint-rule-rust-build-defaults-scoped-backends
     type: opa-policy
     path: >-
@@ -171,7 +178,7 @@ artifacts:
     description: >
       Rule package manifest (sensor wiring, parameters, defaults) for
       rust-build-defaults.
-    sha256: 16acaf69c5a87ec09396381d18ca7b1cdde72d7a8123bac3478f54f2118ba337
+    sha256: 67e4d56dd94e93a0160c22bbbc768921880f41b1791122b0e912603ca07cbeab
   - id: lint-rule-rust-dev-build-footprint
     type: opa-policy
     path: platform-standards/canon/lint-rules/rust-dev-build-footprint/policy/rust_dev_build_footprint.rego
@@ -213,6 +220,45 @@ artifacts:
     description: >-
       Rule package manifest for the nested cargo offline test audit.
     sha256: 24fa0c1172f43aaecc39e0a1059463dad3185c126553c3c43590a97011491178
+  - id: lint-rule-nested-cargo-fixture-manifests
+    type: opa-policy
+    path: platform-standards/canon/lint-rules/nested-cargo-fixture-manifests/policy/nested_cargo_fixture_manifests.rego
+    description: >-
+      Sensor requiring a cargo Dependabot entry to cover every standalone
+      manifest with registry dependencies.
+    sha256: 2395da7d40855051ad9e152a45030bd822c55e6c3fc30cbf82d52dec282a8391
+  - id: lint-rule-nested-cargo-fixture-manifests-manifest
+    type: lint-config
+    path: platform-standards/canon/lint-rules/nested-cargo-fixture-manifests/rule.yaml
+    description: >-
+      Rule package manifest for the nested cargo fixture manifest audit.
+    sha256: 0298f084690bc5c3606ce04b25a2f7b500a5dc27d9a83f1265bf391d7fceee72
+  - id: lint-rule-nested-cargo-nextest
+    type: opa-policy
+    path: platform-standards/canon/lint-rules/nested-cargo-nextest/policy/nested_cargo_nextest.rego
+    description: >-
+      Sensor requiring a serial, bounded nextest group where Rust tests spawn
+      cargo or rustc.
+    sha256: 0264854038fa49414a3965b2b618049bb2c9d257a7012eb7d7df9ef95ecf0546
+  - id: lint-rule-nested-cargo-nextest-manifest
+    type: lint-config
+    path: platform-standards/canon/lint-rules/nested-cargo-nextest/rule.yaml
+    description: >-
+      Rule package manifest for the nested cargo nextest configuration audit.
+    sha256: 5c10239d5859b2888e0a5b3e61209faf4e45260bf354aaab32682f5f4062e619
+  - id: lint-rule-nested-cargo-ci-wiring
+    type: opa-policy
+    path: platform-standards/canon/lint-rules/nested-cargo-ci-wiring/policy/nested_cargo_ci_wiring.rego
+    description: >-
+      Sensor refusing per-run or temporary CARGO_TARGET_DIR values and a silent
+      setup-rust wrapper opt-out in workflows.
+    sha256: 884b0b95ef42c2f2d614a62c36bd9a5c304c626f5b5c1d4376390ba6d613da76
+  - id: lint-rule-nested-cargo-ci-wiring-manifest
+    type: lint-config
+    path: platform-standards/canon/lint-rules/nested-cargo-ci-wiring/rule.yaml
+    description: >-
+      Rule package manifest for the nested cargo CI wiring audit.
+    sha256: 7da6b7ff13fee41088a0e66db62a94cc24b0d21673dbb5fc05734172d64d3349
   - id: lint-rule-main-owned-codescene-coverage
     type: opa-policy
     path: >-
@@ -356,14 +402,14 @@ artifacts:
     path: platform-standards/canon/lint-rules/whitaker-provisioning/rule.yaml
     description: >
       Rule package manifest for the Whitaker provisioning policy.
-    sha256: c1500119f0ab29421b61309b78c3d10120fd069c20101c3923e6160c38ea5ba0
+    sha256: d4500b2c2cbe3cb06a4a5ccf2b2c2836eb3086c36c4ff97a4b454dfff9e6e989
   - id: lint-rule-dependency-family-contracts
     type: opa-policy
     path: >-
       platform-standards/canon/lint-rules/dependency-family-contracts/policy/dependency_family_contracts.rego
     description: >
       Report-only DF-001 to DF-003 and DF-006 policy checking recorded dependency relationships against Dependabot grouping.
-    sha256: 23d946d0cc636c2f3e3bb7f6dbb678c1c0d8cd652d89b772b03b5c5c8b38c5bd
+    sha256: 6143be98de41bd3749904d396537b57fa8c55ca2debcc2a763ab32478133a9e6
   - id: lint-rule-dependency-family-contracts-manifest
     type: lint-config
     path: >-

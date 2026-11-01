@@ -171,3 +171,71 @@ test_wrong_kind if {
   findings := policy.deny with input as data.fixtures.wrong_kind
   profile(findings) == {["DF-006", "indeterminate"]}
 }
+
+# maturin and PyO3 join one multi-ecosystem group: they arrive in one pull
+# request, so the tuple is protected without a bound or an ignore rule.
+test_maturin_multi_group if {
+  findings := policy.deny with input as data.fixtures.maturin_multi_group
+  count(findings) == 0
+}
+
+# Only one member joins the group, so the other still arrives alone.
+test_maturin_multi_group_one_member if {
+  findings := policy.deny with input as data.fixtures.maturin_multi_group_one_member
+  ids(findings) == {"DF-002"}
+}
+
+# Members in different groups arrive in different pull requests.
+test_maturin_multi_group_split if {
+  findings := policy.deny with input as data.fixtures.maturin_multi_group_split
+  ids(findings) == {"DF-002"}
+}
+
+# A group the file never defines protects nothing.
+test_maturin_multi_group_undefined if {
+  findings := policy.deny with input as data.fixtures.maturin_multi_group_undefined
+  ids(findings) == {"DF-002"}
+}
+
+# Patterns that miss a member leave it outside the group.
+test_maturin_multi_group_patterns_miss if {
+  findings := policy.deny with input as data.fixtures.maturin_multi_group_patterns_miss
+  ids(findings) == {"DF-002"}
+}
+
+# A member of the root workspace is read through the governed root, so a split
+# PyO3 family in the member is reported with the member's path.
+test_workspace_member_split if {
+  findings := policy.deny with input as data.fixtures.workspace_member_split
+  ids(findings) == {"DF-001"}
+  some finding in findings
+  finding.path == "native/Cargo.toml"
+}
+
+test_workspace_member_grouped if {
+  findings := policy.deny with input as data.fixtures.workspace_member_grouped
+  count(findings) == 0
+}
+
+# The shape Dependabot needs: the group entry takes pyo3, its build crate and
+# maturin into one pull request, and a plain entry ignores them and keeps the
+# rest. One group takes the family together and protects the tuple.
+test_maturin_two_entries if {
+  findings := policy.deny with input as data.fixtures.maturin_two_entries
+  count(findings) == 0
+}
+
+# A lone group entry takes only pyo3, so the family is split: its build crate
+# has no group at all.
+test_family_lone_group_entry if {
+  findings := policy.deny with input as data.fixtures.family_lone_group_entry
+  ids(findings) == {"DF-001"}
+}
+
+# pytest-bdd is ignored in the plain entry and the group entry does not take it:
+# nothing updates it, so the pytest tuple is held back. The maturin tuple is not
+# declared (no PyO3), so only the pytest relationship applies.
+test_pytest_bdd_ignored_beside_group_entry if {
+  findings := policy.deny with input as data.fixtures.pytest_bdd_ignored_beside_group_entry
+  count(findings) == 0
+}
