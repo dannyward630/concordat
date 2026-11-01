@@ -486,6 +486,77 @@ class _SweepSession:
         return True
 
 
+class _WindowsMsvcrt(typ.Protocol):
+    """Windows locking calls missing from the cross-platform type stubs."""
+
+    LK_NBLCK: int
+    LK_UNLCK: int
+
+    def locking(self, file_descriptor: int, mode: int, byte_count: int) -> None:
+        """Lock or unlock a range in a file opened by the CRT."""
+
+
+def _windows_msvcrt() -> _WindowsMsvcrt:
+    """Load the Windows CRT lock API behind its small typed interface."""
+    import msvcrt
+
+    return typ.cast("_WindowsMsvcrt", msvcrt)
+
+
+def _try_lock_windows_file(lock_file: typ.BinaryIO) -> bool:
+    """Attempt a non-blocking Windows lock and report contention."""
+    msvcrt = _windows_msvcrt()
+    lock_file.seek(0)
+    acquired = False
+    with contextlib.suppress(OSError):
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+        acquired = True
+    return acquired
+
+
+def _lock_windows_file(lock_file: typ.BinaryIO) -> None:
+    """Acquire a one-byte Windows file lock, waiting for its current owner."""
+    lock_file.seek(0, os.SEEK_END)
+    if lock_file.tell() == 0:
+        lock_file.write(b"\0")
+        lock_file.flush()
+    while not _try_lock_windows_file(lock_file):
+        time.sleep(0.05)
+
+
+def _unlock_windows_file(lock_file: typ.BinaryIO) -> None:
+    """Release the one-byte Windows file lock."""
+    msvcrt = _windows_msvcrt()
+    lock_file.seek(0)
+    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+def _lock_posix_file(lock_file: typ.BinaryIO) -> None:
+    """Acquire an exclusive POSIX advisory file lock."""
+    import fcntl
+
+    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+
+
+def _unlock_posix_file(lock_file: typ.BinaryIO) -> None:
+    """Release a POSIX advisory file lock."""
+    import fcntl
+
+    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _acquire_file_lock(lock_file: typ.BinaryIO) -> None:
+    """Acquire the platform's advisory file lock."""
+    lock = _lock_windows_file if os.name == "nt" else _lock_posix_file
+    lock(lock_file)
+
+
+def _release_file_lock(lock_file: typ.BinaryIO) -> None:
+    """Release the platform's advisory file lock."""
+    unlock = _unlock_windows_file if os.name == "nt" else _unlock_posix_file
+    unlock(lock_file)
+
+
 @contextlib.contextmanager
 def _ledger_lock(ledger_path: pathlib.Path) -> typ.Iterator[None]:
     """Serialize sweep sessions that share the same canonical ledger path."""
@@ -495,33 +566,11 @@ def _ledger_lock(ledger_path: pathlib.Path) -> typ.Iterator[None]:
     lock_path = lock_dir / f"{lock_key}.lock"
 
     with lock_path.open("a+b") as lock_file:
-        if os.name == "nt":
-            import msvcrt
-
-            lock_file.seek(0, os.SEEK_END)
-            if lock_file.tell() == 0:
-                lock_file.write(b"\0")
-                lock_file.flush()
-            while True:
-                try:
-                    lock_file.seek(0)
-                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
-                    break
-                except OSError:
-                    time.sleep(0.05)
-            try:
-                yield
-            finally:
-                lock_file.seek(0)
-                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        _acquire_file_lock(lock_file)
+        try:
+            yield
+        finally:
+            _release_file_lock(lock_file)
 
 
 def run_sweep(
